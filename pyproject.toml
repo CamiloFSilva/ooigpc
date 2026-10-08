@@ -24,6 +24,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "jupyter", "ipykernel"]
+demo = ["marimo>=0.6"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -90,18 +90,15 @@ print(f"Identified  Γ = {ident.Gamma:.2e}  (true: {Gamma_true:.2e})")
 ```
 src/ooigpc/
 ├── __init__.py
-├── pc_basis.py         # Hermite PC basis, norms, 3rd/4th-order tensors
 ├── diffusion.py        # MSD computation and exponential fit → c  (Eq. 7)
 ├── correction.py       # Two-level non-Gaussian correction (Suppl. §5)
 ├── igpc.py             # Main identification: Eqs. 10–11
 ├── solvers/
 │   ├── langevin.py     # Discrete Langevin SDE integrator  (Eq. 3)
 │   └── van_der_pol.py  # Stochastic Van der Pol ODE  (Eq. 2)
-├── signal/
-│   ├── bandpass.py     # Butterworth / rectangular band-pass filter
-│   └── envelope.py     # Hilbert-transform amplitude envelope
-└── reference/
-    └── km_coefficients.py  # Kramers–Moyal reference method
+└── signal/
+    ├── bandpass.py     # Butterworth / rectangular band-pass filter
+    └── envelope.py     # Hilbert-transform amplitude envelope
 ```
 
 ---
