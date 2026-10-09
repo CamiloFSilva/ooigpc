@@ -3,16 +3,24 @@ solvers/van_der_pol.py — Stochastic Van der Pol oscillator integrator.
 
 The stochastically forced Van der Pol (VdP) equation (Eq. 2 of the paper):
 
-    η̈ − 2ν·η̇ + κ·η·η̇ + ω₀²·η = Ξ(t)
+    η̈ − 2ν·η̇ + κ·η²·η̇ + ω₀²·η = Ξ(t)
 
 where Ξ(t) is Gaussian white noise with intensity Γ.
 
 Written as a first-order system:
 
-    d[η  ]   [η̇                        ]        [0         ]
-    d[η̇  ] = [-ω₀²η + 2ν·η̇ − κ·η·η̇  ] dt + [√(2Γ) dW  ]
+    d[η  ]   [η̇                         ]        [0         ]
+    d[η̇  ] = [-ω₀²η + 2ν·η̇ − κ·η²·η̇  ] dt + [√(2Γ) dW  ]
 
 Discretised with the Euler–Maruyama scheme.
+
+Note on the nonlinear term
+--------------------------
+The cubic term −κ·η²·η̇ is essential: it is the Van-der-Pol-type saturation
+that produces the limit cycle at A_eq = √(8ν/κ) and, after slow-amplitude
+averaging, yields the Langevin drift νA − (κ/8)A³ (Eq. 3 of the paper).
+A quadratic term −κ·η·η̇ would average to zero over one oscillation cycle
+and therefore cannot produce amplitude saturation.
 
 References
 ----------
@@ -96,7 +104,7 @@ def simulate_van_der_pol(
     for k in range(N):
         e = eta[k]
         ed = eta_dot[k]
-        eta_ddot = -omega2 * e + 2.0 * nu * ed - kappa * e * ed
+        eta_ddot = -omega2 * e + 2.0 * nu * ed - kappa * e**2 * ed
         eta[k + 1] = e + ed * dt
         eta_dot[k + 1] = ed + eta_ddot * dt + sigma_noise * noise[k]
 

@@ -6,12 +6,12 @@ function [t, eta, eta_dot, A] = simulate_van_der_pol(nu, kappa, Gamma, omega, N,
 %
 %   Integrates the stochastically forced Van der Pol oscillator (Eq. 2):
 %
-%       η̈ − 2ν·η̇ + κ·η·η̇ + ω₀²·η = Ξ(t)
+%       η̈ − 2ν·η̇ + κ·η²·η̇ + ω₀²·η = Ξ(t)
 %
 %   rewritten as the first-order system:
 %
-%       d[η   ]   [η̇                           ]       [0        ]
-%       d[η̇  ] = [-ω₀²η + 2ν·η̇ − κ·η·η̇  ] dt + [√(2Γ) dW ]
+%       d[η   ]   [η̇                            ]       [0        ]
+%       d[η̇  ] = [-ω₀²η + 2ν·η̇ − κ·η²·η̇  ] dt + [√(2Γ) dW ]
 %
 %   using the Euler–Maruyama scheme.  The amplitude envelope is computed as
 %
@@ -82,7 +82,7 @@ for k = 1:N
     e  = eta(k);
     ed = eta_dot(k);
 
-    eta_ddot   = -omega2 * e  +  2*nu * ed  -  kappa * e * ed;
+    eta_ddot   = -omega2 * e  +  2*nu * ed  -  kappa * e.^2 * ed;
     eta(k+1)   = e  + ed * dt;
     eta_dot(k+1) = ed + eta_ddot * dt  +  sigma_noise * noise(k);
 end
