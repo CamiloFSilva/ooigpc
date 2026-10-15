@@ -511,52 +511,60 @@ def __(mo):
     ---
     ## Apply igPC to your own signal
 
-    Upload a measured **amplitude envelope** $A(t)$ to identify the parameters of your system.
+    Upload either a **raw pressure signal** η(t) or a pre-extracted
+    **amplitude envelope** A(t).
 
-    **What is the amplitude envelope?**
-    The igPC method operates on the slow amplitude $A(t)$ of the oscillation, not on
-    the raw pressure signal $p(t)$.  $A(t)$ is obtained by computing the analytic signal
-    via the Hilbert transform and taking its modulus:
+    **Raw pressure signal** (e.g. exported from MATLAB with `writematrix([t, eta], 'signal.csv')`):
+    the app will band-pass filter around f₀ and compute the Hilbert envelope automatically.
 
-    $$A(t) = \bigl|\mathcal{H}\{p(t)\}\bigr|$$
+    **Amplitude envelope** (already computed, e.g. from `abs(hilbert(eta_bp))`):
+    fed directly into the igPC pipeline.
 
-    followed by a band-pass filter around the dominant mode frequency to remove harmonics.
-    The `ooigpc` Python package (see the repository) provides a ready-to-use function for
-    this step.  If you are working in MATLAB, `envelope(p, N, 'analytic')` or `abs(hilbert(p))`
-    after band-passing gives the same result.
+    **File formats accepted:**
 
-    **File format (choose one):**
-
-    - **CSV / TXT** — one column, one amplitude sample per row, no header.
-    - **NumPy .npy** — a 1-D array saved with `np.save("envelope.npy", A)`.
-
-    All values must be **positive**.  Set the sampling interval Δt and the system
-    frequency $f_0$ using the sliders below.
+    | Format | Content |
+    |--------|---------|
+    | CSV / TXT — 1 column | η(t) or A(t), one sample per row |
+    | CSV / TXT — 2 columns | [t, η(t)] or [t, A(t)] — time column is used to infer Δt |
+    | NumPy .npy | 1-D array η or A |
     """)
     return
 
 
 @app.cell
 def __(mo):
+    sig_type_rb = mo.ui.radio(
+        options=["Raw pressure signal η(t)  →  band-pass + Hilbert",
+                 "Amplitude envelope A(t)  →  direct identification"],
+        value  ="Raw pressure signal η(t)  →  band-pass + Hilbert",
+        label  ="Signal type",
+    )
     user_file  = mo.ui.file(
-        label    = "Amplitude envelope file (.csv, .txt or .npy)",
+        label    = "Signal file  (.csv, .txt or .npy)",
         filetypes= [".csv", ".txt", ".npy"],
     )
     dt_user_sl = mo.ui.slider(
         1e-5, 5e-3, value=5e-5, step=1e-5,
-        label="Sampling interval Δt  (s)",
+        label="Sampling interval Δt  (s)  [ignored when file has a time column]",
     )
     f0_user_sl = mo.ui.slider(
         20.0, 2000.0, value=120.0, step=10.0,
         label="Fundamental frequency f₀  (Hz)",
     )
-    mo.vstack([user_file, dt_user_sl, f0_user_sl])
-    return dt_user_sl, f0_user_sl, user_file
+    bw_user_sl = mo.ui.slider(
+        5.0, 200.0, value=50.0, step=5.0,
+        label="Band-pass half-bandwidth Δf  (Hz)  [only for raw pressure]",
+    )
+    mo.vstack([sig_type_rb, user_file, dt_user_sl, f0_user_sl, bw_user_sl])
+    return bw_user_sl, dt_user_sl, f0_user_sl, sig_type_rb, user_file
 
 
 @app.cell
-def __(curve_fit, dt_user_sl, f0_user_sl, mo, np, plt, skew, user_file):
+def __(bw_user_sl, curve_fit, dt_user_sl, f0_user_sl,
+       mo, np, plt, sig_type_rb, skew, user_file):
     import io as _io
+    from scipy.signal import butter as _butter, filtfilt as _filtfilt
+    from scipy.signal import hilbert as _hilbert
 
     # ── helper ───────────────────────────────────────────────────────────────
     def _msd_model_u(tau, C0, lam):
@@ -568,29 +576,92 @@ def __(curve_fit, dt_user_sl, f0_user_sl, mo, np, plt, skew, user_file):
     else:
         try:
             # ── 0. Parse ─────────────────────────────────────────────────────
-            _fi = user_file.value[0]
+            _fi  = user_file.value[0]
             if _fi.name.lower().endswith(".npy"):
-                _A_raw = np.load(_io.BytesIO(_fi.contents)).ravel()
+                _raw = np.load(_io.BytesIO(_fi.contents)).ravel()
             else:
-                _A_raw = np.loadtxt(_io.BytesIO(_fi.contents), delimiter=None).ravel()
+                import re as _re
+                # utf-8-sig strips the BOM that MATLAB sometimes writes
+                _text = _fi.contents.decode("utf-8-sig", errors="replace")
+                _lines = [l.strip() for l in _text.splitlines() if l.strip()]
 
-            _A_raw = _A_raw.astype(float)
-            if np.any(_A_raw <= 0):
-                raise ValueError(
-                    f"The file contains {np.sum(_A_raw <= 0):,} non-positive values.  "
-                    "Please upload a positive amplitude envelope."
-                )
+                # Try common delimiter/decimal combos in order.
+                # MATLAB on German/EU locale → semicolon delimiter, comma decimal.
+                # MATLAB on EN locale or newer → comma delimiter, dot decimal.
+                _raw = None
+                for _sep, _fix_dec in [
+                    (";",  True),   # EU MATLAB: 0,123 separated by ;
+                    (",",  False),  # standard CSV: 0.123 separated by ,
+                    ("\t", True),   # tab + comma decimal
+                    ("\t", False),  # tab + dot decimal
+                    (None, False),  # whitespace-separated
+                ]:
+                    try:
+                        if _fix_dec:
+                            _body = "\n".join(
+                                _re.sub(r"(?<=\d),(?=\d)", ".", l) for l in _lines
+                            )
+                        else:
+                            _body = "\n".join(_lines)
+                        _kw = {"delimiter": _sep} if _sep is not None else {}
+                        _raw = np.loadtxt(_io.StringIO(_body), **_kw)
+                        break
+                    except Exception:
+                        continue
+                if _raw is None:
+                    raise ValueError(
+                        "Could not parse the file. Expected a CSV/TSV with one or "
+                        "two numeric columns (time, signal)."
+                    )
 
-            _dt_u  = dt_user_sl.value
+            _raw = np.atleast_2d(_raw.astype(float))
+            if _raw.shape[0] < _raw.shape[1]:
+                _raw = _raw.T   # ensure (N, ncols)
+
+            _dt_u = dt_user_sl.value
+            if _raw.shape[1] >= 2:
+                # two-column file: [t, signal]
+                _dt_u = float(_raw[1, 0] - _raw[0, 0])
+                _sig  = _raw[:, 1]
+            else:
+                _sig  = _raw[:, 0]
+
             _f0_u  = f0_user_sl.value
+            _bw_u  = bw_user_sl.value
             _om_u  = 2.0 * np.pi * _f0_u
-            _Nstep = len(_A_raw) - 1   # number of steps (len(A) - 1)
+            _fs_u  = 1.0 / _dt_u
+            _is_raw = "Raw pressure" in sig_type_rb.value
 
-            # ── 1. MSD ───────────────────────────────────────────────────────
-            _i0_u   = min(5000, _Nstep // 10)
-            _tau_u  = np.arange(2.5e-4,
-                                 min(0.25, _Nstep * _dt_u * 0.12),
-                                 2.5e-4)
+            # ── 1. Preprocessing ─────────────────────────────────────────────
+            if _is_raw:
+                # Band-pass filter η(t) → Hilbert → A(t)
+                _nyq   = _fs_u / 2.0
+                _fl, _fh = _f0_u - _bw_u, _f0_u + _bw_u
+                if _fl <= 0 or _fh >= _nyq:
+                    raise ValueError(
+                        f"Band-pass [{_fl:.1f}, {_fh:.1f}] Hz out of range "
+                        f"for fs = {_fs_u:.0f} Hz.  Reduce Δf or adjust f₀."
+                    )
+                _bb, _ab = _butter(4, [_fl/_nyq, _fh/_nyq], btype="bandpass")
+                _eta_bp  = _filtfilt(_bb, _ab, _sig)
+                _A_raw   = np.abs(_hilbert(_eta_bp))
+                _prep_label = f"band-pass [{_fl:.0f}–{_fh:.0f} Hz] + Hilbert"
+            else:
+                _A_raw = _sig.copy()
+                if np.any(_A_raw <= 0):
+                    raise ValueError(
+                        f"The envelope contains {np.sum(_A_raw<=0):,} non-positive "
+                        "values.  Please upload a positive amplitude envelope."
+                    )
+                _prep_label = "pre-extracted envelope (no filtering)"
+
+            _Nstep = len(_A_raw) - 1
+
+            # ── 2. MSD ───────────────────────────────────────────────────────
+            _i0_u  = min(5000, _Nstep // 10)
+            _tau_u = np.arange(2.5e-4,
+                                min(0.25, _Nstep * _dt_u * 0.12),
+                                2.5e-4)
             if len(_tau_u) < 5:
                 _tau_u = np.linspace(_dt_u * 2, _Nstep * _dt_u * 0.05, 40)
 
@@ -599,7 +670,7 @@ def __(curve_fit, dt_user_sl, f0_user_sl, mo, np, plt, skew, user_file):
             _MSD_u  = np.zeros(len(_taus_u))
 
             for _idx_u, _tk in enumerate(_tk_u):
-                _ie_u = _Nstep - _tk   # same convention as simulation: N = len(A)-1
+                _ie_u = _Nstep - _tk
                 if _ie_u <= _i0_u:
                     continue
                 _x1_u = _A_raw[_i0_u : _ie_u + 1]
@@ -610,85 +681,98 @@ def __(curve_fit, dt_user_sl, f0_user_sl, mo, np, plt, skew, user_file):
                 _d_u           = _x1_u[_mk_u] - _x2_u[_mk_u]
                 _MSD_u[_idx_u] = float(np.dot(_d_u, _d_u) / len(_d_u))
 
-            # Initial guess: plateau ≈ variance, λ ≈ 10 s⁻¹
             _p0_u = [float(np.var(_A_raw[_i0_u:])) * 0.1, 10.0]
             _popt_u, _ = curve_fit(
                 _msd_model_u, _taus_u, _MSD_u,
-                p0     = _p0_u,
-                bounds = ((0, 0), (np.inf, np.inf)),
-                maxfev = 10_000,
+                p0=_p0_u, bounds=((0, 0), (np.inf, np.inf)), maxfev=10_000,
             )
-            _C0_u   = float(_popt_u[0])
-            _lam_u  = float(_popt_u[1])
-            _cu     = _C0_u * _lam_u                   # Eq. 14
+            _C0_u      = float(_popt_u[0])
+            _lam_u     = float(_popt_u[1])
+            _cu        = _C0_u * _lam_u
             _MSD_fit_u = _msd_model_u(_taus_u, _C0_u, _lam_u)
 
-            # ── 2. Correction (Fig. 6 workflow) ──────────────────────────────
-            _Ap_u   = _A_raw[_i0_u:]
-            _mu_u   = float(np.mean(_Ap_u))
-            _std_u  = float(np.std(_Ap_u, ddof=1))
-            _gam_u  = float(skew(_Ap_u, bias=False)) * _std_u**3
-
-            _s0_u = 0.423 * _mu_u    # σ_(0)
-            _s1_u = 0.280 * _mu_u    # σ_(1)
+            # ── 3. Correction (Fig. 6) ────────────────────────────────────────
+            _Ap_u  = _A_raw[_i0_u:]
+            _mu_u  = float(np.mean(_Ap_u))
+            _std_u = float(np.std(_Ap_u, ddof=1))
+            _gam_u = float(skew(_Ap_u, bias=False)) * _std_u**3
+            _s0_u  = 0.423 * _mu_u
+            _s1_u  = 0.280 * _mu_u
 
             if _std_u <= _s1_u:
-                _roots_u   = np.roots([4.0, 0.0, -6.0 * _std_u**2, _gam_u])
-                _x2_u      = float(np.real(_roots_u[2]))
-                _dsig_u    = 2.6 * _x2_u
-                _sigp_u    = float(np.sqrt(max(_std_u**2 - 2.0 * _dsig_u**2, 1e-12)))
-                _reg_u     = "Unstable / Weakly unstable  (σ ≤ 0.280 μ)"
+                _roots_u = np.roots([4.0, 0.0, -6.0 * _std_u**2, _gam_u])
+                _x2_u    = float(np.real(_roots_u[2]))
+                _dsig_u  = 2.6 * _x2_u
+                _sigp_u  = float(np.sqrt(max(_std_u**2 - 2.0 * _dsig_u**2, 1e-12)))
+                _reg_u   = "Unstable / Weakly unstable  (σ ≤ 0.280 μ)"
             elif _std_u <= _s0_u:
-                _beta_u    = (_std_u - _s1_u) / (_s0_u - _s1_u)
-                _dc0_u     =  0.144 * _std_u + 0.0126
-                _dc1_u     = -0.035 * _std_u
-                _dc_u      = (1.0 - _beta_u) * _dc1_u + _beta_u * _dc0_u
-                _sigp_u    = _std_u + _dc_u
-                _reg_u     = "Marginally stable  (0.280 μ < σ ≤ 0.423 μ)"
+                _beta_u  = (_std_u - _s1_u) / (_s0_u - _s1_u)
+                _dc0_u   =  0.144 * _std_u + 0.0126
+                _dc1_u   = -0.035 * _std_u
+                _dc_u    = (1.0 - _beta_u) * _dc1_u + _beta_u * _dc0_u
+                _sigp_u  = _std_u + _dc_u
+                _reg_u   = "Marginally stable  (0.280 μ < σ ≤ 0.423 μ)"
             else:
-                _sigp_u    = _std_u
-                _reg_u     = "Stable  (σ > 0.423 μ) — outside scope of this method"
+                _sigp_u  = _std_u
+                _reg_u   = "Stable  (σ > 0.423 μ) — outside scope of this method"
 
-            # ── 3. Identification (Eqs. 10–11) ───────────────────────────────
+            # ── 4. Identification (Eqs. 10–11) ────────────────────────────────
             _mu2_u  = _mu_u**2
             _sig2_u = _sigp_u**2
             _den_u  = _mu2_u * _sig2_u * (_sig2_u - _mu2_u)
+            _nu_u   = _cu * 0.5 * (9*_sig2_u**2 + 2*_mu2_u*_sig2_u - _mu2_u**2) / _den_u
+            _kap_u  = 8.0 * _cu * 0.5 * (3*_sig2_u - _mu2_u) / _den_u
+            _Gam_u  = _cu * 4.0 * _om_u**2
+            _dur_u  = _Nstep * _dt_u
+            _cyc_u  = _dur_u * _f0_u
 
-            _nu_u    = _cu * 0.5 * (9*_sig2_u**2 + 2*_mu2_u*_sig2_u - _mu2_u**2) / _den_u
-            _kap_u   = 8.0 * _cu * 0.5 * (3*_sig2_u - _mu2_u) / _den_u
-            _Gam_u   = _cu * 4.0 * _om_u**2
+            # ── Plots ─────────────────────────────────────────────────────────
+            _nrows = 2 if _is_raw else 1
+            _figU, _axU = plt.subplots(_nrows, 3, figsize=(13, 3.5 * _nrows),
+                                        squeeze=False)
 
-            _dur_u   = _Nstep * _dt_u
-            _cyc_u   = _dur_u * _f0_u
+            if _is_raw:
+                # Top row: raw η(t) excerpt and filtered signal
+                _nsh = min(10_000, _Nstep + 1)
+                _t_u = np.arange(_nsh) * _dt_u
+                _axU[0][0].plot(_t_u, _sig[:_nsh], lw=0.5, color="steelblue",
+                                label="η(t)")
+                _axU[0][0].set(xlabel="Time (s)", ylabel="η(t)",
+                               title=f"Raw pressure — {_fi.name}")
+                _axU[0][1].plot(_t_u, _eta_bp[:_nsh], lw=0.5, color="tomato",
+                                label="η_bp(t)")
+                _axU[0][1].set(xlabel="Time (s)", ylabel="η_bp(t)",
+                               title=f"Band-passed  ({_fl:.0f}–{_fh:.0f} Hz)")
+                _axU[0][2].plot(_t_u, _A_raw[:_nsh], lw=0.7, color="darkorange")
+                _axU[0][2].set(xlabel="Time (s)", ylabel="A(t)",
+                               title="Hilbert amplitude envelope")
+                _bot = _axU[1]
+            else:
+                _bot = _axU[0]
+                _nsh = min(10_000, _Nstep + 1)
+                _t_u = np.arange(_nsh) * _dt_u
+                _bot[0].plot(_t_u, _A_raw[:_nsh], lw=0.6, color="steelblue")
+                _bot[0].set(xlabel="Time (s)", ylabel="A(t)",
+                            title=f"Envelope excerpt — {_fi.name}")
 
-            # ── Plots ────────────────────────────────────────────────────────
-            _figU, _axU = plt.subplots(1, 3, figsize=(13, 3.5))
-
-            # Signal excerpt
-            _nsh = min(10_000, _Nstep + 1)
-            _t_u = np.arange(_nsh) * _dt_u
-            _axU[0].plot(_t_u, _A_raw[:_nsh], lw=0.6, color="steelblue")
-            _axU[0].set(xlabel="Time (s)", ylabel="A(t)",
-                        title=f"Signal excerpt  ({_fi.name})")
-
-            # MSD fit
-            _axU[1].plot(_taus_u, _MSD_u,     "rx", ms=3, label="MSD data")
-            _axU[1].plot(_taus_u, _MSD_fit_u, "b-", lw=2,
+            _bot[1].plot(_taus_u, _MSD_u,     "rx", ms=3, label="MSD data")
+            _bot[1].plot(_taus_u, _MSD_fit_u, "b-", lw=2,
                          label="2·C(0)·[1−exp(−λτ)]")
-            _axU[1].set(xlabel="τ (s)", ylabel="MSD(τ)",
-                        title=f"MSD:  C(0)={_C0_u:.4f},  λ={_lam_u:.2f} s⁻¹")
-            _axU[1].legend(fontsize=8)
+            _bot[1].set(xlabel="τ (s)", ylabel="MSD(τ)",
+                        title=f"MSD fit:  C(0)={_C0_u:.4f},  λ={_lam_u:.2f} s⁻¹")
+            _bot[1].legend(fontsize=8)
 
-            # PDF
-            _axU[2].hist(_Ap_u, bins=80, density=True,
+            _bot[2].hist(_Ap_u, bins=80, density=True,
                          color="steelblue", alpha=0.7, edgecolor="none")
-            _axU[2].set(xlabel="A", ylabel="PDF", title="Amplitude PDF")
+            _bot[2].set(xlabel="A", ylabel="PDF", title="Amplitude PDF")
 
             plt.tight_layout()
 
             # ── Results table ─────────────────────────────────────────────────
             _summary = mo.md(f"""
             ### igPC results for `{_fi.name}`
+
+            Preprocessing: **{_prep_label}**
 
             Signal: **{_Nstep+1:,} samples**  ·  Δt = {_dt_u:.2e} s
             ·  duration = {_dur_u:.1f} s  ({_cyc_u:.0f} cycles at {_f0_u:.0f} Hz)
@@ -697,8 +781,8 @@ def __(curve_fit, dt_user_sl, f0_user_sl, mo, np, plt, skew, user_file):
 
             | | |
             |---|---|
-            | C(0) (autocovariance) | {_C0_u:.5f} |
-            | λ (relaxation rate) | {_lam_u:.2f} s⁻¹ |
+            | C(0) | {_C0_u:.5f} |
+            | λ | {_lam_u:.2f} s⁻¹ |
             | **c = C(0)·λ** | **{_cu:.5f}** |
 
             **Step 2 — Correction**
@@ -706,9 +790,9 @@ def __(curve_fit, dt_user_sl, f0_user_sl, mo, np, plt, skew, user_file):
             | | |
             |---|---|
             | Regime | {_reg_u} |
-            | μ (mean envelope) | {_mu_u:.4f} |
+            | μ | {_mu_u:.4f} |
             | σ_raw | {_std_u:.4f} |
-            | σ_proj (corrected) | {_sigp_u:.4f} |
+            | σ_proj | {_sigp_u:.4f} |
 
             **Step 3 — Identified parameters**
 
