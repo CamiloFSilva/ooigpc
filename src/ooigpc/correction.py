@@ -164,8 +164,13 @@ def apply_correction(
 
         var_corrected = std**2 - 2.0 * std_correc**2
         if var_corrected <= 0:
-            # Fallback: clamp to a tiny positive value
-            var_corrected = 1e-12
+            # The cubic correction has broken down (often due to large |skewness|
+            # caused by rare deep dips in the Hilbert envelope or other heavy-tailed
+            # artefacts).  Returning std_raw is far better than clamping to ~0,
+            # because the correction is a small refinement — not a large shift —
+            # and "no correction" preserves the information in std.
+            std_correc = 0.0
+            var_corrected = std**2
         sigma = float(np.sqrt(var_corrected))
         region = 2
 
