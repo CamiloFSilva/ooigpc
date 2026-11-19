@@ -1,0 +1,17 @@
+# Deploy the interactive Marimo demo to GitLab Pages.
+# Once the pipeline passes, the notebook is live at:
+#   https://tfd.pages.lrz.de/ooigpc
+#
+# The WASM build runs entirely in the browser — no server needed.
+
+pages:
+  image: python:3.11-slim
+  script:
+    - pip install --quiet "marimo>=0.9.0"
+    - mkdir -p public
+    - marimo export html-wasm marimo/igpc_demo.py -o public/index.html --mode run
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
