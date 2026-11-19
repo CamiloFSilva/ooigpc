@@ -2,27 +2,35 @@
 
 **Output-only identification of thermoacoustic systems using polynomial chaos expansions**
 
-> Silva, C.F. et al. (2026). *Output-only identification of thermoacoustic systems
-> using polynomial chaos expansions.* Combustion and Flame.
+> Silva, C. F. (2026). *Output-only identification of thermoacoustic systems using
+> polynomial chaos expansions.* Combustion and Flame.
 
 ---
 
-## Try it — no installation needed
+## Try it — no installation required
 
-Readily explore the output-only identification method by clicking the link below.
-The interactive demo runs entirely in your browser:
+Explore the method through an interactive Marimo demonstration running directly in your browser.
 
-### ➡️ [Open interactive demo](LINK)
+### ➡️ [Launch interactive demo](LINK)
 
-Set the system parameters (ν, κ, Γ), simulate a thermoacoustic signal, and watch
-the igPC method recover them — no Python installation required.
+Set the oscillator parameters (ν, κ, Γ), simulate a thermoacoustic signal, and see
+how the method recovers the underlying parameters. No Python installation is required.
 
 ---
 
-## What is this?
+## What does OOigPC do?
 
-`ooigpc` identifies the three parameters of a self-excited thermoacoustic oscillator
-from measured pressure data **without any external forcing** (output-only).
+OOigPC identifies the dynamical parameters of a self-excited thermoacoustic oscillator
+using only pressure measurements, without external excitation.
+
+Unlike conventional output-only identification methods based on Kramers–Moyal
+coefficients, OOigPC avoids the estimation of conditional probability distributions
+and nonlinear optimization.
+
+Instead, intrusive generalized polynomial chaos (igPC) expansions provide
+**explicit algebraic expressions** for the linear growth rate (ν) and nonlinear
+saturation coefficient (κ) in terms of the diffusion coefficient (c) and low-order
+statistics of the pressure envelope.
 
 The oscillator amplitude A(t) obeys the Itô SDE:
 
@@ -31,18 +39,17 @@ $$
               + \sqrt{2c}\,\mathrm{d}W
 $$
 
-The three identified parameters are:
-
 | Symbol | Meaning | Unit |
 |--------|---------|------|
 | ν | Linear growth rate | s⁻¹ |
 | κ | Nonlinear damping coefficient | Pa⁻²·s⁻¹ |
 | Γ | Noise intensity | Pa²·s⁻³ |
 
-The method uses iterative generalized Polynomial Chaos (igPC) expansions to
-derive closed-form algebraic formulae (Eqs. 10–11 of the paper) that express ν
-and κ directly in terms of the mean μ, corrected standard deviation σ, and
-diffusion coefficient c of the amplitude PDF.
+The main contribution is a **simple and transparent analytical identification
+procedure**, rather than a reduction in computational cost.
+
+For the mathematical derivation, validation, and limitations of the method, see the
+accompanying paper (Eqs. 10–11).
 
 ---
 
@@ -116,8 +123,8 @@ src/ooigpc/
 
 ## Jupyter tutorial
 
-The notebook `notebooks/tutorial.ipynb` reproduces the results of the
-supplementary material step by step, with equations cross-referenced to the paper.
+The notebook `notebooks/tutorial.ipynb` reproduces the results of the supplementary
+material step by step, with equations cross-referenced to the paper.
 
 ```bash
 jupyter notebook notebooks/tutorial.ipynb
