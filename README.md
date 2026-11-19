@@ -11,7 +11,7 @@
 
 Explore the method through an interactive Marimo demonstration running directly in your browser.
 
-### ➡️ [Launch interactive demo](LINK)
+### ➡️ [Launch interactive demo](https://camilofsilva.github.io/ooigpc)
 
 Set the oscillator parameters (ν, κ, Γ), simulate a thermoacoustic signal, and see
 how the method recovers the underlying parameters. No Python installation is required.
