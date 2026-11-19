@@ -14,3 +14,10 @@ venv/
 .DS_Store
 .ipynb_checkpoints/
 *.pdf
+
+# Test signals and Marimo cache
+matlab/*.csv
+marimo/__marimo__/
+
+# MATLAB scratch work from Claude sessions
+Archive/Claude outputs/
