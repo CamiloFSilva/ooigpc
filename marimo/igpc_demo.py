@@ -141,10 +141,10 @@ def __(mo):
 
     The continuous Langevin equation (Eq. 3) is discretised as (Eq. 4):
 
-    $$A_{n+1} = A_n \;+\; \underbrace{a\,A_n\,\Delta t}_{\text{linear growth}}
-               \;-\; \underbrace{b\,A_n^3\,\Delta t}_{\text{nonlinear saturation}}
-               \;+\; \underbrace{\dfrac{c}{A_n}\,\Delta t}_{\text{diffusion correction}}
-               \;+\; \underbrace{\sqrt{2c\,\Delta t}\;\xi_n}_{\text{noise}} \tag{4}$$
+    $$A_{n+1} = A_n \;+\; a\,A_n\,\Delta t
+               \;-\; b\,A_n^3\,\Delta t
+               \;+\; \dfrac{c}{A_n}\,\Delta t
+               \;+\; \sqrt{2c\,\Delta t}\;\xi_n \tag{4}$$
 
     with $\xi_n \sim \mathcal{N}(0,1)$ independent at each step.
     """)
