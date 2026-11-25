@@ -549,19 +549,34 @@ def __(mo):
     )
     f0_user_sl = mo.ui.slider(
         20.0, 2000.0, value=120.0, step=10.0,
-        label="Fundamental frequency f₀  (Hz)",
+        label="f₀ override  (Hz)  [raw pressure: auto-detected from PSD — adjust only if the detected peak is wrong]",
     )
     bw_user_sl = mo.ui.slider(
         5.0, 200.0, value=50.0, step=5.0,
         label="Band-pass half-bandwidth Δf  (Hz)  [only for raw pressure]",
     )
-    mo.vstack([sig_type_rb, user_file, dt_user_sl, f0_user_sl, bw_user_sl])
-    return bw_user_sl, dt_user_sl, f0_user_sl, sig_type_rb, user_file
+    tau_max_sl = mo.ui.slider(
+        0.05, 1.0, value=0.2, step=0.05,
+        label="Max time delay τ_max  (s)  [MSD fit range]",
+    )
+    mo.vstack([
+        sig_type_rb, user_file, dt_user_sl,
+        mo.callout(mo.md(
+            "**f₀ auto-detection (raw pressure):** the dominant frequency is estimated "
+            "automatically from the Welch PSD of the uploaded signal.  "
+            "The *f₀ override* slider is used only if you move it away from its default "
+            "(120 Hz) by more than 15 Hz — useful when a harmonic dominates the spectrum.  "
+            "The *Δt slider* is ignored whenever the file contains a time column.  "
+            "For *Amplitude envelope* uploads the f₀ slider is always applied."
+        ), kind="info"),
+        f0_user_sl, bw_user_sl, tau_max_sl,
+    ])
+    return bw_user_sl, dt_user_sl, f0_user_sl, sig_type_rb, tau_max_sl, user_file
 
 
 @app.cell
 def __(bw_user_sl, curve_fit, dt_user_sl, f0_user_sl,
-       mo, np, plt, sig_type_rb, skew, user_file):
+       mo, np, plt, sig_type_rb, skew, tau_max_sl, user_file):
     import io as _io
     from scipy.signal import butter as _butter, filtfilt as _filtfilt
     from scipy.signal import hilbert as _hilbert
@@ -626,11 +641,26 @@ def __(bw_user_sl, curve_fit, dt_user_sl, f0_user_sl,
             else:
                 _sig  = _raw[:, 0]
 
-            _f0_u  = f0_user_sl.value
-            _bw_u  = bw_user_sl.value
-            _om_u  = 2.0 * np.pi * _f0_u
-            _fs_u  = 1.0 / _dt_u
+            _bw_u   = bw_user_sl.value
+            _fs_u   = 1.0 / _dt_u
             _is_raw = "Raw pressure" in sig_type_rb.value
+
+            # ── Auto-detect f₀ via Welch PSD ────────────────────────────────
+            from scipy.signal import welch as _welch
+            _nperseg_w = min(len(_sig) // 4, 8192)
+            _ff_w, _Pxx_w = _welch(_sig, fs=_fs_u, nperseg=_nperseg_w)
+            _f0_det = float(_ff_w[int(np.argmax(_Pxx_w[1:])) + 1])
+            if _is_raw:
+                # Slider overrides auto-detection only when moved >15 Hz from default
+                _f0_override = abs(f0_user_sl.value - 120.0) > 15.0
+                _f0_u     = f0_user_sl.value if _f0_override else _f0_det
+                _f0_label = (f"**{_f0_u:.1f} Hz** (manual override via slider)"
+                             if _f0_override else
+                             f"**{_f0_det:.1f} Hz** (auto-detected from Welch PSD)")
+            else:
+                _f0_u     = f0_user_sl.value
+                _f0_label = f"**{_f0_u:.1f} Hz** (from slider; needed for Γ = 4ω₀²·c)"
+            _om_u = 2.0 * np.pi * _f0_u
 
             # ── 1. Preprocessing ─────────────────────────────────────────────
             if _is_raw:
@@ -659,9 +689,8 @@ def __(bw_user_sl, curve_fit, dt_user_sl, f0_user_sl,
 
             # ── 2. MSD ───────────────────────────────────────────────────────
             _i0_u  = min(5000, _Nstep // 10)
-            _tau_u = np.arange(2.5e-4,
-                                min(0.25, _Nstep * _dt_u * 0.12),
-                                2.5e-4)
+            _tau_max_u = min(tau_max_sl.value, _Nstep * _dt_u * 0.4)
+            _tau_u = np.arange(2.5e-4, _tau_max_u, 2.5e-4)
             if len(_tau_u) < 5:
                 _tau_u = np.linspace(_dt_u * 2, _Nstep * _dt_u * 0.05, 40)
 
@@ -727,44 +756,48 @@ def __(bw_user_sl, curve_fit, dt_user_sl, f0_user_sl,
             _cyc_u  = _dur_u * _f0_u
 
             # ── Plots ─────────────────────────────────────────────────────────
-            _nrows = 2 if _is_raw else 1
-            _figU, _axU = plt.subplots(_nrows, 3, figsize=(13, 3.5 * _nrows),
-                                        squeeze=False)
+            _nsh = min(10_000, _Nstep + 1)
+            _t_u = np.arange(_nsh) * _dt_u
 
             if _is_raw:
-                # Top row: raw η(t) excerpt and filtered signal
-                _nsh = min(10_000, _Nstep + 1)
-                _t_u = np.arange(_nsh) * _dt_u
-                _axU[0][0].plot(_t_u, _sig[:_nsh], lw=0.5, color="steelblue",
-                                label="η(t)")
+                _figU, _axU = plt.subplots(2, 3, figsize=(13, 7), squeeze=False)
+                # Top row: raw η(t), band-passed, Hilbert envelope
+                _axU[0][0].plot(_t_u, _sig[:_nsh], lw=0.5, color="steelblue")
                 _axU[0][0].set(xlabel="Time (s)", ylabel="η(t)",
                                title=f"Raw pressure — {_fi.name}")
-                _axU[0][1].plot(_t_u, _eta_bp[:_nsh], lw=0.5, color="tomato",
-                                label="η_bp(t)")
+                _axU[0][1].plot(_t_u, _eta_bp[:_nsh], lw=0.5, color="tomato")
                 _axU[0][1].set(xlabel="Time (s)", ylabel="η_bp(t)",
                                title=f"Band-passed  ({_fl:.0f}–{_fh:.0f} Hz)")
                 _axU[0][2].plot(_t_u, _A_raw[:_nsh], lw=0.7, color="darkorange")
                 _axU[0][2].set(xlabel="Time (s)", ylabel="A(t)",
                                title="Hilbert amplitude envelope")
-                _bot = _axU[1]
+                # Bottom row: MSD(τ), MSD(τ)/(2τ), PDF
+                _bMSD, _bMSD2, _bPDF = _axU[1]
             else:
-                _bot = _axU[0]
-                _nsh = min(10_000, _Nstep + 1)
-                _t_u = np.arange(_nsh) * _dt_u
-                _bot[0].plot(_t_u, _A_raw[:_nsh], lw=0.6, color="steelblue")
-                _bot[0].set(xlabel="Time (s)", ylabel="A(t)",
-                            title=f"Envelope excerpt — {_fi.name}")
+                _figU, _axU = plt.subplots(1, 4, figsize=(16, 3.5), squeeze=False)
+                _axU[0][0].plot(_t_u, _A_raw[:_nsh], lw=0.6, color="steelblue")
+                _axU[0][0].set(xlabel="Time (s)", ylabel="A(t)",
+                               title=f"Envelope excerpt — {_fi.name}")
+                _bMSD, _bMSD2, _bPDF = _axU[0][1], _axU[0][2], _axU[0][3]
 
-            _bot[1].plot(_taus_u, _MSD_u,     "rx", ms=3, label="MSD data")
-            _bot[1].plot(_taus_u, _MSD_fit_u, "b-", lw=2,
-                         label="2·C(0)·[1−exp(−λτ)]")
-            _bot[1].set(xlabel="τ (s)", ylabel="MSD(τ)",
-                        title=f"MSD fit:  C(0)={_C0_u:.4f},  λ={_lam_u:.2f} s⁻¹")
-            _bot[1].legend(fontsize=8)
+            _bMSD.plot(_taus_u, _MSD_u,     "rx", ms=3, label="MSD data")
+            _bMSD.plot(_taus_u, _MSD_fit_u, "b-", lw=2,
+                       label="2·C(0)·[1−exp(−λτ)]")
+            _bMSD.set(xlabel="τ (s)", ylabel="MSD(τ)",
+                      title=f"MSD:  C(0)={_C0_u:.4f},  λ={_lam_u:.2f} s⁻¹")
+            _bMSD.legend(fontsize=8)
 
-            _bot[2].hist(_Ap_u, bins=80, density=True,
-                         color="steelblue", alpha=0.7, edgecolor="none")
-            _bot[2].set(xlabel="A", ylabel="PDF", title="Amplitude PDF")
+            _bMSD2.plot(_taus_u, _MSD_u     / (2 * _taus_u), "rx", ms=3, label="data")
+            _bMSD2.plot(_taus_u, _MSD_fit_u / (2 * _taus_u), "b-", lw=2, label="model")
+            _bMSD2.axhline(_cu, color="k", ls="--", lw=1.5,
+                           label=f"c = {_cu:.5f}")
+            _bMSD2.set(xlabel="τ (s)", ylabel="MSD(τ) / (2τ)",
+                       title="Diffusion coeff  c = C(0)·λ")
+            _bMSD2.legend(fontsize=8)
+
+            _bPDF.hist(_Ap_u, bins=80, density=True,
+                       color="steelblue", alpha=0.7, edgecolor="none")
+            _bPDF.set(xlabel="A", ylabel="PDF", title="Amplitude PDF")
 
             plt.tight_layout()
 
@@ -775,7 +808,8 @@ def __(bw_user_sl, curve_fit, dt_user_sl, f0_user_sl,
             Preprocessing: **{_prep_label}**
 
             Signal: **{_Nstep+1:,} samples**  ·  Δt = {_dt_u:.2e} s
-            ·  duration = {_dur_u:.1f} s  ({_cyc_u:.0f} cycles at {_f0_u:.0f} Hz)
+            ·  duration = {_dur_u:.1f} s  ({_cyc_u:.0f} cycles at {_f0_u:.1f} Hz)
+            ·  f₀ = {_f0_label}
 
             **Step 1 — Diffusion coefficient**
 
@@ -813,6 +847,33 @@ def __(bw_user_sl, curve_fit, dt_user_sl, f0_user_sl,
             )
 
     _out
+
+
+@app.cell
+def __(mo):
+    mo.callout(mo.md(r"""
+    ### 📓  Go deeper — Jupyter notebook tutorials
+
+    This interactive demo covers the core igPC pipeline end-to-end.
+    For the full mathematical derivation, parameter sensitivity studies,
+    comparison with Kramers–Moyal methods, and step-by-step reproduction
+    of the figures in the paper, explore the **Jupyter tutorials** bundled
+    with the repository:
+
+    ```
+    git clone https://github.com/CamiloFSilva/ooigpc.git
+    cd ooigpc
+    pip install -e .
+    jupyter notebook notebooks/tutorial.ipynb
+    ```
+
+    Two notebooks are available:
+
+    - **`notebooks/tutorial.ipynb`** — igPC identification walkthrough with
+      synthetic and experimental data
+    - **`notebooks/vdp_tutorial.ipynb`** — Van der Pol oscillator case study
+    """), kind="neutral")
+    return
 
 
 if __name__ == "__main__":
